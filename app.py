@@ -13,7 +13,7 @@ num_imputer = joblib.load("models/num_imputer.pkl")
 cat_imputer = joblib.load("models/cat_imputer.pkl")
 label_encoders = joblib.load("models/label_encoders.pkl")
 
-# Column order must match training dataset
+# Column order must match training dataset (VERY IMPORTANT)
 FEATURE_COLUMNS = [
     "age", "bp", "sg", "al", "su", "rbc", "pc", "pcc", "ba",
     "bgr", "bu", "sc", "sod", "pot", "hemo", "pcv", "wc", "rc",
@@ -21,12 +21,14 @@ FEATURE_COLUMNS = [
 ]
 
 NUMERIC_COLS = [
-    "age", "bp", "sg", "al", "su", "bgr", "bu", "sc",
-    "sod", "pot", "hemo", "pcv", "wc", "rc"
+    "age", "bp", "sg", "al", "su",
+    "bgr", "bu", "sc", "sod", "pot",
+    "hemo", "pcv", "wc", "rc"
 ]
 
 CATEGORICAL_COLS = [
-    "rbc", "pc", "pcc", "ba", "htn", "dm", "cad",
+    "rbc", "pc", "pcc", "ba",
+    "htn", "dm", "cad",
     "appet", "pe", "ane"
 ]
 
@@ -38,11 +40,12 @@ app = FastAPI(title="CKD Prediction API", version="1.0")
 # Enable CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # Allow all origins
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 # -------------------------------
 # Input Schema (Pydantic)
 # -------------------------------
@@ -88,14 +91,13 @@ def preprocess_input(data: dict):
         if col not in df.columns:
             df[col] = np.nan
 
-    # Keep correct order
+    # Keep correct order (raw)
     df = df[FEATURE_COLUMNS]
 
-    # Strip spaces from categorical text
+    # Clean categorical
     for col in CATEGORICAL_COLS:
-        df[col] = df[col].astype(str).str.strip()
-        df[col] = df[col].replace("None", np.nan)
-        df[col] = df[col].replace("nan", np.nan)
+        df[col] = df[col].astype(str).str.strip().str.lower()
+        df[col] = df[col].replace(["none", "nan", ""], np.nan)
 
     # Convert numeric columns
     for col in NUMERIC_COLS:
@@ -113,21 +115,26 @@ def preprocess_input(data: dict):
     for col in CATEGORICAL_COLS:
         le = label_encoders[col]
 
-        # Handle unknown category safely
-        df_cat[col] = df_cat[col].apply(lambda x: x if x in le.classes_ else "missing")
+        def safe_label(val):
+            # handle missing
+            if pd.isna(val):
+                return le.classes_[0]
 
-        # If "missing" not present in encoder, fallback
-        if "missing" not in le.classes_:
-            # replace unknown with first class
-            df_cat[col] = df_cat[col].apply(lambda x: le.classes_[0] if x not in le.classes_ else x)
+            # if value exists in training classes
+            if val in le.classes_:
+                return val
 
+            # fallback for unknown category
+            return le.classes_[0]
+
+        df_cat[col] = df_cat[col].apply(safe_label)
         df_cat[col] = le.transform(df_cat[col])
 
-    # Combine
+    # Combine in correct training order
     final_df = pd.concat([df_num, df_cat], axis=1)
 
-    # Reorder exactly like training
-    final_df = final_df[NUMERIC_COLS + CATEGORICAL_COLS]
+    # THIS IS THE MOST IMPORTANT LINE
+    final_df = final_df[FEATURE_COLUMNS]
 
     return final_df
 
@@ -150,6 +157,6 @@ def predict_ckd(input_data: CKDInput):
     prob = model.predict_proba(processed)[0][1]
 
     return {
-        "prediction": "CKD" if pred == 1 else "NOT CKD",
+        "prediction": "CKD" if int(pred) == 1 else "NOT CKD",
         "ckd_probability": float(prob)
     }
